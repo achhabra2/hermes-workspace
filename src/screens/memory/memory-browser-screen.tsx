@@ -106,6 +106,7 @@ export function MemoryBrowserScreen() {
   const [isSaving, setIsSaving] = useState(false)
   const lineRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const queryClient = useQueryClient()
+  const searchTerm = deferredSearch.trim()
 
   const filesQuery = useQuery({
     queryKey: ['memory', 'list'],
@@ -133,13 +134,11 @@ export function MemoryBrowserScreen() {
     enabled: Boolean(selectedPath),
   })
 
-  const searchEnabled = deferredSearch.trim().length > 0
+  const searchEnabled = searchTerm.length > 0
   const searchQuery = useQuery({
-    queryKey: ['memory', 'search', deferredSearch.trim()],
+    queryKey: ['memory', 'search', searchTerm],
     queryFn: () =>
-      readJson<SearchResponse>(
-        `/api/memory/search?q=${encodeURIComponent(deferredSearch.trim())}`,
-      ),
+      readJson<SearchResponse>(`/api/memory/search?q=${encodeURIComponent(searchTerm)}`),
     enabled: searchEnabled,
   })
 
@@ -165,6 +164,10 @@ export function MemoryBrowserScreen() {
     items.push(...memoryFiles)
     return items
   }, [rootMemory, memoryFiles])
+  const selectedFileMeta = useMemo(
+    () => fileItems.find((file) => file.path === selectedPath) ?? null,
+    [fileItems, selectedPath],
+  )
 
   const searchResults = searchQuery.data?.results ?? []
 
@@ -297,7 +300,7 @@ export function MemoryBrowserScreen() {
                         {result.path}:{result.line}
                       </div>
                       <div className="mt-0.5 line-clamp-2 text-xs text-primary-700 dark:text-neutral-200">
-                        {highlightMatch(result.text, searchInput).map((part, partIndex) => (
+                        {highlightMatch(result.text, searchTerm).map((part, partIndex) => (
                           <span
                             key={partIndex}
                             className={part.hit ? 'rounded bg-yellow-300/30 px-0.5 text-yellow-200' : undefined}
@@ -311,87 +314,41 @@ export function MemoryBrowserScreen() {
                 )}
               </div>
             </div>
-          ) : null}
-
-          <div className={cn('min-h-0 flex-1 px-2 pb-2', !mobileFilesOpen && 'hidden md:block', searchEnabled && 'hidden')}>
-            <div className="max-h-72 space-y-1 overflow-y-auto pr-1 md:max-h-none md:h-full">
-              {rootMemory ? (
-                <FileRow
-                  file={rootMemory}
-                  selected={selectedPath === rootMemory.path}
-                  onSelect={(pathValue) => {
-                    trySelectFile(pathValue)
-                  }}
-                />
-              ) : null}
-
-              <div className="px-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-primary-400 dark:text-neutral-500">
-                memory/
-              </div>
-              {memoryFiles.length === 0 ? (
-                <div className="rounded-lg border border-primary-200 bg-primary-50/80 px-3 py-2 text-xs text-primary-400 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-500">
-                  No files in memory/
-                </div>
-              ) : (
-                memoryFiles.map((file) => (
+          ) : (
+            <div className={cn('min-h-0 flex-1 px-2 pb-2', !mobileFilesOpen && 'hidden md:block')}>
+              <div className="max-h-72 space-y-1 overflow-y-auto pr-1 md:h-full md:max-h-none">
+                {rootMemory ? (
                   <FileRow
-                    key={file.path}
-                    file={file}
-                    selected={selectedPath === file.path}
+                    file={rootMemory}
+                    selected={selectedPath === rootMemory.path}
                     onSelect={(pathValue) => {
                       trySelectFile(pathValue)
                     }}
                   />
-                ))
-              )}
-            </div>
+                ) : null}
 
-            {searchEnabled ? (
-              <div className="mt-3 border-t border-primary-200 pt-3 dark:border-neutral-800">
-                <div className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-primary-400 dark:text-neutral-500">
-                  Search Results
+                <div className="px-1 pt-2 text-[11px] font-semibold uppercase tracking-wide text-primary-400 dark:text-neutral-500">
+                  memory/
                 </div>
-                <div className="max-h-[calc(100vh-12rem)] space-y-1 overflow-y-auto pr-1">
-                  {searchQuery.isLoading ? (
-                    <div className="rounded-lg border border-primary-200 bg-primary-50/80 px-3 py-2 text-xs text-primary-400 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-500">
-                      Searching...
-                    </div>
-                  ) : searchResults.length === 0 ? (
-                    <div className="rounded-lg border border-primary-200 bg-primary-50/80 px-3 py-2 text-xs text-primary-400 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-500">
-                      No matches
-                    </div>
-                  ) : (
-                    searchResults.map((result, index) => (
-                      <button
-                        key={`${result.path}:${result.line}:${index}`}
-                        type="button"
-                        onClick={() => {
-                          if (trySelectFile(result.path, result.line)) {
-                            setMobileFilesOpen(false)
-                          }
-                        }}
-                        className="w-full rounded-lg border border-primary-200 bg-primary-50/80 px-2.5 py-2 text-left hover:border-primary-300 hover:bg-primary-100 dark:border-neutral-800 dark:bg-neutral-900/60 dark:hover:border-neutral-700 dark:hover:bg-neutral-900"
-                      >
-                        <div className="truncate text-[11px] text-primary-500 dark:text-neutral-400">
-                          {result.path}:{result.line}
-                        </div>
-                        <div className="mt-0.5 line-clamp-2 text-xs text-primary-700 dark:text-neutral-200">
-                          {highlightMatch(result.text, deferredSearch).map((part, partIndex) => (
-                            <span
-                              key={partIndex}
-                              className={part.hit ? 'rounded bg-yellow-300/30 px-0.5 text-yellow-200' : undefined}
-                            >
-                              {part.text || ' '}
-                            </span>
-                          ))}
-                        </div>
-                      </button>
-                    ))
-                  )}
-                </div>
+                {memoryFiles.length === 0 ? (
+                  <div className="rounded-lg border border-primary-200 bg-primary-50/80 px-3 py-2 text-xs text-primary-400 dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-500">
+                    No files in memory/
+                  </div>
+                ) : (
+                  memoryFiles.map((file) => (
+                    <FileRow
+                      key={file.path}
+                      file={file}
+                      selected={selectedPath === file.path}
+                      onSelect={(pathValue) => {
+                        trySelectFile(pathValue)
+                      }}
+                    />
+                  ))
+                )}
               </div>
-            ) : null}
-          </div>
+            </div>
+          )}
         </aside>
 
         <section className="min-h-0 rounded-2xl border border-primary-200 bg-primary-50 dark:border-neutral-800 dark:bg-neutral-950 md:col-span-2">
@@ -402,8 +359,8 @@ export function MemoryBrowserScreen() {
               </div>
               {selectedPath ? (
                 <div className="text-xs text-primary-400 dark:text-neutral-500">
-                  {fileItems.find((file) => file.path === selectedPath)?.size != null
-                    ? `${formatBytes(fileItems.find((file) => file.path === selectedPath)!.size)} · ${formatModified(fileItems.find((file) => file.path === selectedPath)!.modified)}`
+                  {selectedFileMeta?.size != null
+                    ? `${formatBytes(selectedFileMeta.size)} · ${formatModified(selectedFileMeta.modified)}`
                     : 'Loading metadata...'}
                 </div>
               ) : null}

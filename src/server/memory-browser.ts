@@ -15,6 +15,10 @@ export type MemorySearchMatch = {
   text: string
 }
 
+function isBrowserMemoryPath(relativePath: string): boolean {
+  return relativePath === 'MEMORY.md' || relativePath.startsWith('memory/')
+}
+
 function normalizeWorkspaceRoot(): string {
   const configured = (process.env.OPENCLAW_WORKSPACE || '').trim()
   return configured || path.join(os.homedir(), '.openclaw', 'workspace')
@@ -54,6 +58,7 @@ function pushIfMarkdownFile(entries: Array<MemoryFileMeta>, workspaceRoot: strin
   if (!stats.isFile()) return
 
   const relativePath = path.relative(workspaceRoot, fullPath).replace(/\\/g, '/')
+  if (!isBrowserMemoryPath(relativePath)) return
 
   entries.push({
     path: relativePath,
