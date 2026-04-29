@@ -30,11 +30,24 @@ export type JobOutput = {
   size: number
 }
 
+export function normalizeJobsResponse(data: unknown): Array<HermesJob> {
+  if (Array.isArray(data)) return data
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'jobs' in data &&
+    Array.isArray(data.jobs)
+  ) {
+    return data.jobs as Array<HermesJob>
+  }
+  return []
+}
+
 export async function fetchJobs(): Promise<Array<HermesJob>> {
   const res = await fetch(`${HERMES_API}?include_disabled=true`)
   if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.status}`)
-  const data = await res.json()
-  return data.jobs ?? []
+  const data = (await res.json()) as unknown
+  return normalizeJobsResponse(data)
 }
 
 export async function createJob(input: {
