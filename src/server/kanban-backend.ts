@@ -117,7 +117,34 @@ function sqliteQuote(value: string): string {
 }
 
 function runSqlite(dbPath: string, sql: string): string {
-  return execFileSync('sqlite3', [dbPath, '-json', sql], {
+  try {
+    return execFileSync('sqlite3', [dbPath, '-json', sql], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    }).trim()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+
+  const pythonScript = `
+import json
+import sqlite3
+import sys
+
+db_path, sql = sys.argv[1], sys.argv[2]
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+try:
+    if sql.lstrip().lower().startswith("select"):
+        rows = conn.execute(sql).fetchall()
+        print(json.dumps([dict(row) for row in rows]))
+    else:
+        conn.executescript(sql)
+        conn.commit()
+finally:
+    conn.close()
+`
+  return execFileSync('python3', ['-c', pythonScript, dbPath, sql], {
     encoding: 'utf8',
     timeout: 15_000,
   }).trim()

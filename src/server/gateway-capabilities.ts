@@ -469,6 +469,7 @@ async function autoDetectGatewayUrl(): Promise<void> {
   const candidates = [
     'http://127.0.0.1:8642',
     'http://127.0.0.1:8643',
+    'http://127.0.0.1:8644',
     'http://127.0.0.1:8645',
   ]
 
@@ -488,7 +489,7 @@ async function autoDetectGatewayUrl(): Promise<void> {
   }
 
   console.warn(
-    '[gateway] Could not reach Hermes gateway on 8645, 8642, or 8643. ' +
+    '[gateway] Could not reach Hermes gateway on 8642, 8643, 8644, or 8645. ' +
       'If you run the workspace on a different machine (Tailscale / VPN / LAN), ' +
       'set HERMES_API_URL=http://<reachable-host>:8642 in .env and restart. ' +
       'Also set API_SERVER_HOST=0.0.0.0 on the gateway so remote peers can connect.',

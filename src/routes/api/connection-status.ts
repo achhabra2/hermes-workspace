@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { createFileRoute } from '@tanstack/react-router'
+import { json } from '@tanstack/react-start'
 import YAML from 'yaml'
 import {
   CLAUDE_API,
@@ -53,7 +54,12 @@ export const Route = createFileRoute('/api/connection-status')({
     handlers: {
       GET: async ({ request }) => {
         const authResult = isAuthenticated(request)
-        if (authResult !== true) return authResult as unknown as Response
+        if (authResult !== true) {
+          return json(
+            { error: 'unauthorized', authRequired: true },
+            { status: 401 },
+          )
+        }
 
         const caps = await ensureGatewayProbed()
         const activeModel = readActiveModel()
