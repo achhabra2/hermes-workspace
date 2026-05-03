@@ -5,6 +5,14 @@ import {
   createSyntheticLiveToolTracker,
 } from './send-stream-live-tools'
 import { resolveSessionKey } from '../../server/session-utils'
+import { bindChatSessionToProfile } from '../../server/chat-session-bindings'
+import { resolveProfileChatRoute } from '../../server/profile-chat-routing'
+import {
+  createProfileSession,
+  getProfileMessages,
+  listProfileSessions,
+  streamProfileChat,
+} from '../../server/profile-chat-client'
 import { isAuthenticated } from '../../server/auth-middleware'
 import { requireJsonContentType } from '../../server/rate-limit'
 import { publishChatEvent } from '../../server/chat-event-bus'
@@ -291,8 +299,6 @@ export const Route = createFileRoute('/api/send-stream')({
         }
         const csrfCheck = requireJsonContentType(request)
         if (csrfCheck) return csrfCheck
-        await ensureGatewayProbed()
-
         // Read body manually to handle large payloads (image attachments
         // can push the JSON body above the default ~1MB parse limit).
         let body: Record<string, unknown> = {}
@@ -312,6 +318,7 @@ export const Route = createFileRoute('/api/send-stream')({
           typeof body.thinking === 'string' ? body.thinking : undefined
         const attachments = normalizeAttachments(body.attachments)
         const history = normalizePortableHistory(body.history)
+        const requestedProfileName = readString(body.profileName)
         if (!message.trim() && (!attachments || attachments.length === 0)) {
           return new Response(
             JSON.stringify({ ok: false, error: 'message required' }),
@@ -350,6 +357,60 @@ export const Route = createFileRoute('/api/send-stream')({
           })
         }
 
+        const profileRoute = await resolveProfileChatRoute({
+          sessionKey,
+          requestedProfileName,
+        })
+        if (profileRoute.ok === false) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error: profileRoute.error,
+              errorCode: profileRoute.errorCode,
+              profileName: profileRoute.profileName,
+              gatewayBaseUrl: profileRoute.gatewayBaseUrl,
+            }),
+            {
+              status: profileRoute.status,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+        const boundProfileName = profileRoute.profileName
+        const profileGatewayBaseUrl = profileRoute.gatewayBaseUrl
+        const useProfileGateway = profileRoute.useProfileGateway
+        if (!useProfileGateway) {
+          await ensureGatewayProbed()
+        }
+
+        const listRouteSessions = (limit: number, offset: number) =>
+          useProfileGateway
+            ? listProfileSessions(profileGatewayBaseUrl, limit, offset)
+            : listSessions(limit, offset)
+        const createRouteSession = (opts?: { id?: string; title?: string; model?: string }) =>
+          useProfileGateway
+            ? createProfileSession(profileGatewayBaseUrl, opts)
+            : createSession(opts)
+        const getRouteMessages = (id: string) =>
+          useProfileGateway
+            ? getProfileMessages(profileGatewayBaseUrl, id)
+            : getSessionMessagesFromAgent(id)
+        const streamRouteChat = (
+          id: string,
+          chatBody: {
+            message: string
+            model?: string
+            system_message?: string
+            attachments?: Array<Record<string, unknown>>
+          },
+          opts: Parameters<typeof streamChat>[2],
+        ) =>
+          useProfileGateway
+            ? streamProfileChat(profileGatewayBaseUrl, id, chatBody, opts)
+            : streamChat(id, chatBody, opts)
+        bindChatSessionToProfile(sessionKey, boundProfileName)
+        bindChatSessionToProfile(resolvedFriendlyId, boundProfileName)
+
         // Check if the selected model is a local provider model — force portable + direct routing
         let chatMode = getChatMode()
         let localBaseUrl: string | undefined
@@ -369,6 +430,8 @@ export const Route = createFileRoute('/api/send-stream')({
         if (chatMode === 'portable' && sessionKey === 'new') {
           sessionKey = crypto.randomUUID()
           resolvedFriendlyId = sessionKey
+          bindChatSessionToProfile(sessionKey, boundProfileName)
+          bindChatSessionToProfile(resolvedFriendlyId, boundProfileName)
         }
 
         // Create streaming response using the SHARED server connection
@@ -383,6 +446,16 @@ export const Route = createFileRoute('/api/send-stream')({
         const abortController = new AbortController()
         let closeStream = () => {
           streamClosed = true
+        }
+        const persistActiveRun = (
+          write: (sessionKey: string, runId: string) => Promise<unknown>,
+        ) => {
+          if (!activeRunId || !activeRunSessionKey) return
+          const runId = activeRunId
+          const runSessionKey = activeRunSessionKey
+          void (persistedRunReady ?? Promise.resolve())
+            .then(() => write(runSessionKey, runId))
+            .catch(() => null)
         }
 
         const stream = new ReadableStream({
@@ -469,17 +542,6 @@ export const Route = createFileRoute('/api/send-stream')({
               }).catch(() => null)
             }
 
-            const persistActiveRun = (
-              write: (sessionKey: string, runId: string) => Promise<unknown>,
-            ) => {
-              if (!activeRunId || !activeRunSessionKey) return
-              const runId = activeRunId
-              const runSessionKey = activeRunSessionKey
-              void (persistedRunReady ?? Promise.resolve())
-                .then(() => write(runSessionKey, runId))
-                .catch(() => null)
-            }
-
             try {
               if (chatMode === 'portable') {
                 const runId = crypto.randomUUID()
@@ -508,6 +570,7 @@ export const Route = createFileRoute('/api/send-stream')({
                   runId,
                   sessionKey: portableSessionKey,
                   friendlyId: portableFriendlyId,
+                  profileName: boundProfileName,
                 })
 
                 try {
@@ -576,6 +639,7 @@ export const Route = createFileRoute('/api/send-stream')({
                           typeof body.model === 'string' ? body.model : undefined,
                         sessionId: portableSessionKey,
                         signal: abortController.signal,
+                        baseUrl: useProfileGateway ? profileGatewayBaseUrl : undefined,
                       })
                       for await (const ev of responsesStream) {
                         if (ev.kind === 'text.delta') {
@@ -715,7 +779,7 @@ export const Route = createFileRoute('/api/send-stream')({
                     signal: abortController.signal,
                     stream: true,
                     sessionId: portableSessionKey,
-                    baseUrl: localBaseUrl,
+                    baseUrl: localBaseUrl ?? (useProfileGateway ? `${profileGatewayBaseUrl}/v1` : undefined),
                   })
 
                   let thinking = ''
@@ -824,7 +888,7 @@ export const Route = createFileRoute('/api/send-stream')({
                 return
               }
 
-              if (!getGatewayCapabilities().sessions) {
+              if (!useProfileGateway && !getGatewayCapabilities().sessions) {
                 throw new Error(SESSIONS_API_UNAVAILABLE_MESSAGE)
               }
 
@@ -836,7 +900,7 @@ export const Route = createFileRoute('/api/send-stream')({
                 let reused: string | null = null
                 if (sessionKey === 'main') {
                   try {
-                    const recent = await listSessions(30, 0)
+                    const recent = await listRouteSessions(30, 0)
                     const isInternal = (id: string) =>
                       id.startsWith('cron_') ||
                       id.startsWith('cron:') ||
@@ -869,10 +933,12 @@ export const Route = createFileRoute('/api/send-stream')({
                   sessionKey = reused
                   resolvedFriendlyId = reused
                 } else {
-                  const session = await createSession()
+                  const session = await createRouteSession()
                   sessionKey = session.id
                   resolvedFriendlyId = session.id
                 }
+                bindChatSessionToProfile(sessionKey, boundProfileName)
+                bindChatSessionToProfile(resolvedFriendlyId, boundProfileName)
               }
 
               let startedSent = false
@@ -899,7 +965,7 @@ export const Route = createFileRoute('/api/send-stream')({
               // tool cards (off-by-one-turn bug).
               let liveBaselineCount = 0
               try {
-                const baseline = (await getSessionMessagesFromAgent(
+                const baseline = (await getRouteMessages(
                   sessionKey,
                 )) as unknown as Array<Record<string, unknown>>
                 if (Array.isArray(baseline)) liveBaselineCount = baseline.length
@@ -913,7 +979,7 @@ export const Route = createFileRoute('/api/send-stream')({
                 while (liveRunActive) {
                   if (!liveRunActive || streamClosed) break
                   try {
-                    const allMsgs = (await getSessionMessagesFromAgent(
+                    const allMsgs = (await getRouteMessages(
                       sessionKey,
                     )) as unknown as Array<Record<string, unknown>>
                     if (!Array.isArray(allMsgs) || allMsgs.length === 0) {
@@ -955,7 +1021,7 @@ export const Route = createFileRoute('/api/send-stream')({
               })()
 
               try {
-                await streamChat(
+                await streamRouteChat(
                 sessionKey,
                 {
                   message: getChatMessage(message, attachments),
@@ -999,6 +1065,7 @@ export const Route = createFileRoute('/api/send-stream')({
                         runId,
                         sessionKey: sessionKeyFromEvent,
                         friendlyId: sessionKeyFromEvent,
+                        profileName: boundProfileName,
                       })
                     }
 
@@ -1343,7 +1410,7 @@ export const Route = createFileRoute('/api/send-stream')({
                           > = []
                           try {
                             persistedMessages =
-                              (await getSessionMessagesFromAgent(
+                              (await getRouteMessages(
                                 sid,
                               )) as unknown as Array<Record<string, unknown>>
                           } catch {
@@ -1425,6 +1492,7 @@ export const Route = createFileRoute('/api/send-stream')({
                         state: 'complete',
                         sessionKey: sessionKeyFromEvent,
                         runId,
+                        profileName: boundProfileName,
                       }
                       persistActiveRun((runSessionKey, activeId) =>
                         markRunStatus(runSessionKey, activeId, 'complete'),
@@ -1501,6 +1569,7 @@ export const Route = createFileRoute('/api/send-stream')({
               sessionKey,
               friendlyId: resolvedFriendlyId,
             }),
+            'X-Hermes-Profile-Name': boundProfileName,
           },
         })
       },

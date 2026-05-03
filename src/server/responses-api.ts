@@ -53,6 +53,8 @@ export type ResponsesChatRequest = {
   model?: string
   sessionId?: string
   signal?: AbortSignal
+  /** Optional Hermes gateway base URL for explicit profile-bound routing. */
+  baseUrl?: string
 }
 
 const _authHeaders = (): Record<string, string> =>
@@ -123,7 +125,10 @@ export async function* streamResponses(
   if (req.model) body.model = req.model
   if (req.sessionId) body.session_id = req.sessionId
 
-  const res = await fetch(`${CLAUDE_API}/v1/responses`, {
+  const responsesBaseUrl = req.baseUrl
+    ? req.baseUrl.trim().replace(/\/+$/, '')
+    : CLAUDE_API
+  const res = await fetch(`${responsesBaseUrl}/v1/responses`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
